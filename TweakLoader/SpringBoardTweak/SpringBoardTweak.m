@@ -99,6 +99,55 @@ static void initStatusBarTweak(void) {
     if (cls16) hookStatusBarClass(cls16);
 }
 
+#pragma mark - Dock Transparency
+
+static void (*orig_setBackgroundAlpha)(id self, SEL _cmd, double alpha);
+static void hook_setBackgroundAlpha(id self, SEL _cmd, double alpha) {
+    orig_setBackgroundAlpha(self, _cmd, 0.0);
+}
+
+static void (*orig_setBackgroundView)(id self, SEL _cmd, id view);
+static void hook_setBackgroundView(id self, SEL _cmd, id view) {
+    orig_setBackgroundView(self, _cmd, view);
+    ((void (*)(id, SEL, BOOL))objc_msgSend)(view, sel_registerName("setHidden:"), YES);
+}
+
+static void initDockTransparency(void) {
+    Class dockView = objc_getClass("SBDockView");
+    if (dockView) {
+        Method m = class_getInstanceMethod(dockView, @selector(setBackgroundAlpha:));
+        if (m) {
+            orig_setBackgroundAlpha = (void *)method_getImplementation(m);
+            method_setImplementation(m, (IMP)hook_setBackgroundAlpha);
+        }
+    }
+    Class platterView = objc_getClass("SBFloatingDockPlatterView");
+    if (platterView) {
+        Method m = class_getInstanceMethod(platterView, @selector(setBackgroundView:));
+        if (m) {
+            orig_setBackgroundView = (void *)method_getImplementation(m);
+            method_setImplementation(m, (IMP)hook_setBackgroundView);
+        }
+    }
+}
+
+#pragma mark - Hide Icon Labels
+
+static void (*orig_applyIconLabelAlpha)(id self, SEL _cmd, double alpha);
+static void hook_applyIconLabelAlpha(id self, SEL _cmd, double alpha) {
+    orig_applyIconLabelAlpha(self, _cmd, 0.0);
+}
+
+static void initHideIconLabels(void) {
+    Class iconView = objc_getClass("SBIconView");
+    if (!iconView) return;
+    Method m = class_getInstanceMethod(iconView, @selector(_applyIconLabelAlpha:));
+    if (m) {
+        orig_applyIconLabelAlpha = (void *)method_getImplementation(m);
+        method_setImplementation(m, (IMP)hook_applyIconLabelAlpha);
+    }
+}
+
 #pragma mark - Status Bar gesture
 
 @implementation SpringBoard(Hook)
@@ -451,28 +500,45 @@ static NSData *downloadFile(NSString *urlString) {
 
 __attribute__((constructor)) static void init() {
     initFrontBoardBypass();
-    // Auto-enable status bar tweak on load (works on both iOS 16 and 17)
     initStatusBarTweak();
-    // Action button: single click = flashlight, long press = original (iOS 17)
     initActionButtonTweak();
-    // Add long press gesture to status bar
+    initDockTransparency();
+    initHideIconLabels();
     [SpringBoard.sharedApplication initStatusBarGesture];
-    
+
     // Auto-download PersistenceHelper to /tmp if not present
-    NSString *helperPath = @"/tmp/PersistenceHelper_Embedded";
-    if (![[NSFileManager defaultManager] fileExistsAtPath:helperPath]) {
-        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        NSString *helperPath = @"/tmp/PersistenceHelper_Embedded";
+        if (![[NSFileManager defaultManager] fileExistsAtPath:helperPath]) {
             NSString *url = @"https://github.com/opa334/TrollStore/releases/download/2.1/PersistenceHelper_Embedded";
             NSData *data = downloadFile(url);
             if (data && data.length > 0) {
                 [data writeToFile:helperPath atomically:YES];
                 chmod(helperPath.UTF8String, 0755);
             }
-        });
-    }
+        }
+    });
 
     dispatch_async(dispatch_get_main_queue(), ^{
-        // Show alert on load
-        [SpringBoard.sharedApplication showInjectedAlert];
+        NSString *flag = @"/tmp/.coruna_welcomed";
+        if (![[NSFileManager defaultManager] fileExistsAtPath:flag]) {
+            [@"" writeToFile:flag atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            UIAlertController *welcome = [UIAlertController alertControllerWithTitle:@"Welcome to Coruna"
+                message:@"Your device has been jailbroken!\n\n"
+                         "Features enabled:\n"
+                         "  \u2022 Custom status bar (time + date)\n"
+                         "  \u2022 Action button \u2192 Flashlight\n"
+                         "  \u2022 Transparent dock\n"
+                         "  \u2022 Hidden icon labels\n"
+                         "  \u2022 TrollStore helper\n\n"
+                         "Long-press the status bar for settings."
+                preferredStyle:UIAlertControllerStyleAlert];
+            [welcome addAction:[UIAlertAction actionWithTitle:@"Let's go!" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+                [SpringBoard.sharedApplication showInjectedAlert];
+            }]];
+            [SpringBoard.viewControllerToPresent presentViewController:welcome animated:YES completion:nil];
+        } else {
+            [SpringBoard.sharedApplication showInjectedAlert];
+        }
     });
 }

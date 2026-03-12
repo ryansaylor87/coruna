@@ -1237,19 +1237,6 @@ function YA() {/* Original: YA → resolveSymbols */
                     if (lastSlash >= 0) hashName = hashName.substring(lastSlash + 1);
                     hashName = hashName.replace(/\.min\.js$/, "").replace(/\.js$/, "");
 
-                    // Warn user before proceeding with exploit
-                    if (hashName === "7a7d99099b035b2c6512b6ebeeea6df1ede70fbb") {
-                        let shouldContinue = confirm(
-                            "WARNING: This tool uses some parts of a real exploit to inject some dylibs into SpringBoard.\n\n" +
-                            "Do NOT store sensitive data on this device while the exploit is active. (just for your safety)\n\n" +
-                            "OK = idrc just go for it!\n" +
-                            "Cancel = Nah I'm good, I want to stay safe");
-                        if (!shouldContinue) {
-                            window.log("[LOADER] User canceled.");
-                            return;
-                        }
-                    }
-
                     // Fetch decrypted F00DBEEF container from payloads/ directory
                     window.log("[LOADER] Loading payload: " + hashName);
                     const container = await E.buildContainer(hashName);
